@@ -78,11 +78,41 @@ with st.sidebar:
     interval_sec = st.slider(
         "リクエスト間隔 (秒)",
         min_value=1.0,
-        max_value=10.0,
-        value=3.0,
+        max_value=20.0,
+        value=6.0,
         step=0.5,
-        help="各動画処理ごとの待機時間。YouTubeおよびGemini APIのレート制限（429エラーやIP制限）を防ぐため2.5秒以上を推奨します。",
+        help="各動画処理ごとの待機時間。YouTubeおよびGemini APIのレート制限（Bot検知や429エラー）を防ぐためデフォルト6.0秒（推奨: 5〜8秒）に設定されています。",
     )
+
+    enable_cooldown = st.checkbox(
+        "バッチ休憩（クールダウン）を有効化",
+        value=True,
+        help="一定件数を処理するごとに安全な待機時間を自動で挟み、大量取得時のBot検知やクォータ超過を防止します。",
+    )
+
+    if enable_cooldown:
+        col_cd1, col_cd2 = st.columns(2)
+        with col_cd1:
+            cooldown_every = st.number_input(
+                "休憩頻度 (件)",
+                min_value=3,
+                max_value=30,
+                value=10,
+                step=1,
+                help="何件処理するごとに休憩を挟むかを指定します（デフォルト: 10件）。",
+            )
+        with col_cd2:
+            cooldown_sec = st.number_input(
+                "休憩時間 (秒)",
+                min_value=10,
+                max_value=300,
+                value=45,
+                step=5,
+                help="休憩時の待機秒数を指定します（デフォルト: 45秒）。",
+            )
+    else:
+        cooldown_every = 999999
+        cooldown_sec = 0
 
     prefix_date_option = st.checkbox(
         "ファイル名に投稿日を付加する",
@@ -193,6 +223,7 @@ if submit_button:
         append_log(f"✅ 合計 {total_videos} 件の動画メタデータを検出しました。順次字幕取得・要約を開始します。")
 
         saved_files: Dict[str, str] = {}
+        processed_count = 0  # 実アクセス（字幕取得・API呼び出し）を行った件数カウント
 
         for idx, video in enumerate(videos, start=1):
             progress_ratio = idx / total_videos
@@ -227,6 +258,7 @@ if submit_button:
                 except Exception:
                     pass
 
+            processed_count += 1
             append_log(f"▶ [{idx}/{total_videos}] 字幕を取得中: {video.title} ({video.video_id})")
 
             # 1. 字幕取得
@@ -282,6 +314,19 @@ if submit_button:
                 st.session_state.stats["error"] += 1
 
             time.sleep(interval_sec)
+
+            # 4. バッチクールダウン判定 (指定件数ごとの長め休憩)
+            if enable_cooldown and processed_count > 0 and (processed_count % cooldown_every == 0) and idx < total_videos:
+                append_log(
+                    f"☕ [{idx}/{total_videos}件進行中: 実アクセス{processed_count}件完了] "
+                    f"YouTube/APIのレート制限・Bot検知を防止するため、{cooldown_sec}秒間のクールダウン待機に入ります..."
+                )
+                with status_container.container():
+                    st.warning(
+                        f"☕ レート制限防止のため {cooldown_sec} 秒間クールダウン中... "
+                        f"({idx}/{total_videos} 件進行中 / 実アクセス {processed_count} 件完了)"
+                    )
+                time.sleep(cooldown_sec)
 
         # ZIPアーカイブ作成
         if saved_files:
