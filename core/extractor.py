@@ -156,7 +156,12 @@ def fetch_video_transcript(metadata: VideoMetadata) -> Optional[VideoTranscriptD
     """
     video_id = metadata.video_id
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        # Support both youtube-transcript-api v1.x (instance.list) and legacy v0.x (class.list_transcripts)
+        if hasattr(YouTubeTranscriptApi, "list_transcripts"):
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        else:
+            api = YouTubeTranscriptApi()
+            transcript_list = api.list(video_id)
     except (TranscriptsDisabled, NoTranscriptFound) as e:
         logger.warning(f"No transcripts found for video {video_id} ({metadata.title}): {e}")
         return None
@@ -230,11 +235,18 @@ def fetch_video_transcript(metadata: VideoMetadata) -> Optional[VideoTranscriptD
 
     snippets: List[SubtitleSnippet] = []
     for item in raw_items:
-        text = item.get("text", "").strip()
+        # Support both v1.x (FetchedTranscriptSnippet object) and v0.x (dict)
+        if isinstance(item, dict):
+            text = str(item.get("text", "")).strip()
+            start = float(item.get("start", 0.0))
+            duration = float(item.get("duration", 0.0))
+        else:
+            text = str(getattr(item, "text", "")).strip()
+            start = float(getattr(item, "start", 0.0))
+            duration = float(getattr(item, "duration", 0.0))
+
         if not text:
             continue
-        start = float(item.get("start", 0.0))
-        duration = float(item.get("duration", 0.0))
         snippets.append(SubtitleSnippet(start=start, duration=duration, text=text))
 
     if not snippets:
