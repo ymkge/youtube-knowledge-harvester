@@ -10,9 +10,8 @@ from google import genai
 from google.genai import types
 from core.extractor import VideoTranscriptData
 
-logger = logging.getLogger(__name__)
-
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-flash-latest"
+AVAILABLE_MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"]
 
 
 def format_published_date(date_str: Optional[str]) -> str:
@@ -110,7 +109,7 @@ class GeminiSummarizer:
 
         Args:
             api_key: Gemini API Key. If None, reads from GEMINI_API_KEY environment variable.
-            model: Model name. If None, reads from GEMINI_MODEL or defaults to gemini-2.5-flash.
+            model: Model name. If None, reads from GEMINI_MODEL or defaults to gemini-flash-latest.
         """
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
         if not self.api_key:

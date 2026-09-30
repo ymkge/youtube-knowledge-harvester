@@ -80,7 +80,7 @@ summary: "動画全体の要約を150字程度で簡潔かつ具体的に記述"
 
 ### ライブラリ・SDK利用方針
 - **Gemini API**: レガシーな `google-generativeai` ではなく、Googleの公式新SDKである **`google-genai`**（`from google import genai`）を使用すること。
-- **デフォルトモデル**: `gemini-2.5-flash`（環境変数 `GEMINI_MODEL` でカスタマイズ可能にする）。
+- **利用可能モデル**: デフォルトは `gemini-flash-latest`。Streamlit UI上のプルダウンで `gemini-flash-latest` または `gemini-flash-lite-latest` を選択可能とする。
 - **動画メタデータ抽出**: `yt-dlp` は `extract_flat=True` を指定し、動画ファイルをダウンロードしないこと。
 
 ### セキュリティ・シークレット管理

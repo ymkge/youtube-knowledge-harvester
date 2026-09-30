@@ -3,7 +3,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Streamlit](https://img.shields.io/badge/UI-Streamlit-FF4B4B.svg)](https://streamlit.io/)
-[![Gemini API](https://img.shields.io/badge/Powered%20by-Gemini%202.5%20Flash-4E75F6.svg)](https://ai.google.dev/)
+[![Gemini API](https://img.shields.io/badge/Powered%20by-Gemini%20Flash-4E75F6.svg)](https://ai.google.dev/)
 
 YouTubeチャンネルの直近動画から字幕・メタデータを取得し、Gemini APIを用いてAIエージェント（RAG: Retrieval-Augmented Generation）が参照しやすい**構造化Markdown（.md）ファイル**を一括生成・保存・エクスポートするオープンソースのローカルWebアプリケーションです。
 
@@ -13,7 +13,7 @@ YouTubeチャンネルの直近動画から字幕・メタデータを取得し�
 
 - ⚡ **高速メタデータ抽出**: `yt-dlp` のメタデータ走査 (`extract_flat=True`) により、動画をダウンロードすることなく直近指定件数（1〜200件）の動画情報を瞬時に取得。
 - 🎙️ **多言語フォールバック字幕取得**: `youtube-transcript-api` を利用し、日本語手動字幕 $\rightarrow$ 日本語自動生成字幕 $\rightarrow$ 英語字幕 $\rightarrow$ その他字幕 の順でスマートに取得。字幕が存在しない動画は自動スキップしバッチ処理を継続。
-- 🤖 **Gemini 2.5 Flash による高品質要約**: タイムスタンプ付き字幕を構造化し、TL;DR、トピック別詳細、該当再生秒数リンク付きのMarkdownを出力。
+- 🤖 **Gemini Flash による高品質要約**: タイムスタンプ付き字幕を構造化し、TL;DR、トピック別詳細、該当再生秒数リンク付きのMarkdownを出力。モデルは `gemini-flash-latest`（デフォルト）および軽量な `gemini-flash-lite-latest` をUI上で選択可能。
 - 📂 **RAG最適化フォーマット**:
   - YAML Frontmatter にメタデータ（タイトル、動画ID、チャンネル名、URL、投稿日、タグ、150字サマリー）を完全保持。
   - セクション見出しに開始タイムスタンプと動画のダイレクト再生URL（`t=開始秒s`）を付与。
@@ -72,7 +72,6 @@ cp .env.example .env
 `.env` を編集:
 ```env
 GEMINI_API_KEY=your_actual_gemini_api_key_here
-GEMINI_MODEL=gemini-2.5-flash
 ```
 > [!TIP]
 > Gemini API Keyは [Google AI Studio](https://aistudio.google.com/) から無料で即座に取得できます。Web UI上のサイドバーから直接入力・上書きすることも可能です。
@@ -92,10 +91,11 @@ streamlit run app.py
 1. **YouTubeチャンネルURL**: 対象チャンネルのURLを入力（例: `https://www.youtube.com/@channel_name`）
 2. **取得動画件数**: 直近何件の動画を取得するか指定（デフォルト: 50件、最大: 200件）
 3. **ローカル出力先ディレクトリ**: Markdownファイルの保存先（デフォルト: `./output/knowledge/`）
-4. **「ナレッジ抽出を開始」をクリック**:
+4. **モデル選択（サイドバー）**: `gemini-flash-latest`（デフォルト）または `gemini-flash-lite-latest` を選択
+5. **「ナレッジ抽出を開始」をクリック**:
    - リアルタイムに進捗バーとログが更新されます。
    - 字幕のない動画はスキップされ、全体の処理は中断されません。
-5. **完了後**:
+6. **完了後**:
    - ローカルフォルダへ `{YYYYMMDD}_{video_id}.md` 形式で直接保存されます。
    - 「生成された全MarkdownファイルをZIPでダウンロード」ボタンから一括ダウンロードも可能です。
 
