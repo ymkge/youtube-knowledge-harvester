@@ -103,6 +103,7 @@ class TestSummarizer(unittest.TestCase):
 
         mock_file = MagicMock()
         mock_file.name = "files/test_audio_123"
+        mock_file.state = "ACTIVE"
         mock_client.files.upload.return_value = mock_file
 
         mock_response = MagicMock()

@@ -30,6 +30,8 @@ RETRYABLE_PATTERNS = [
     "gateway timeout",
     "deadlineexceeded",
     "timeout",
+    "failed_precondition",
+    "active state",
 ]
 
 
@@ -300,13 +302,30 @@ summary: "動画全体の要約を150字程度で簡潔かつ具体的に記述�
 """
 
         uploaded_file = None
+        current_model = self.model_name
         try:
-            logger.info(f"Uploading audio file {audio_path.name} to Gemini API...")
-            uploaded_file = self.client.files.upload(file=str(audio_path))
-
-            current_model = self.model_name
             for attempt in range(1, max_retries + 1):
                 try:
+                    # 1. Upload audio file if not already uploaded
+                    if uploaded_file is None:
+                        logger.info(f"Uploading audio file {audio_path.name} to Gemini API (attempt {attempt}/{max_retries})...")
+                        uploaded_file = self.client.files.upload(file=str(audio_path))
+
+                        # 2. Wait until file state becomes ACTIVE (Google GenAI processing wait)
+                        for _ in range(20):
+                            state_str = str(getattr(uploaded_file, "state", "")).upper()
+                            if "ACTIVE" in state_str:
+                                break
+                            if "FAILED" in state_str:
+                                raise RuntimeError(f"Geminiサーバー上でのファイル処理に失敗しました (state: {state_str})")
+                            time.sleep(1.0)
+                            try:
+                                uploaded_file = self.client.files.get(name=uploaded_file.name)
+                            except Exception as get_err:
+                                logger.warning(f"File status poll warning: {get_err}")
+                                break
+
+                    # 3. Generate structured markdown
                     response = self.client.models.generate_content(
                         model=current_model,
                         contents=[uploaded_file, audio_prompt],
@@ -326,6 +345,17 @@ summary: "動画全体の要約を150字程度で簡潔かつ具体的に記述�
 
                 except Exception as e:
                     err_str = str(e)
+
+                    # Invalidate file if it became stale or failed state precondition
+                    if any(p in err_str.lower() for p in ["failed_precondition", "active state", "not found"]):
+                        logger.warning(f"File state invalid on attempt {attempt}: {e}. Discarding to re-upload.")
+                        if uploaded_file:
+                            try:
+                                self.client.files.delete(name=uploaded_file.name)
+                            except Exception:
+                                pass
+                            uploaded_file = None
+
                     if is_transient_error(e) and attempt < max_retries:
                         wait_sec = initial_backoff * (2 ** (attempt - 1))
 
