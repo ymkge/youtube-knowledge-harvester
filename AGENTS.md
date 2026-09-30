@@ -74,8 +74,10 @@ summary: "動画全体の要約を150字程度で簡潔かつ具体的に記述"
 ### 言語とスタイル
 - **Python**: 3.10以上対応
 - **型アノテーション**: `from __future__ import annotations` を利用し、すべての関数・メソッドに適切な型ヒントを付与する。
-- **エラーハンドリング**:
+- **エラーハンドリング & レート制限対策**:
   - 字幕取得不可（字幕なし動画）や一時的なAPIエラー時は、**バッチ全体を停止させず、適切にスキップ＆ログ記録**して後続処理を継続すること。
+  - YouTube側（`IpBlocked`）やGemini API側（`429 RESOURCE_EXHAUSTED`）のレート制限対策として、指数バックオフリトライおよび適切なウェイト間隔（2.5〜3秒以上）を維持すること。
+  - 詳細は [`docs/knowledge/troubleshooting_rate_limits.md`](./docs/knowledge/troubleshooting_rate_limits.md) を参照。
   - エラーログやステータスメッセージはユーザーに分かりやすい表現にする。
 
 ### ライブラリ・SDK利用方針
