@@ -17,6 +17,11 @@ from youtube_transcript_api import (
 logger = logging.getLogger(__name__)
 
 
+class YouTubeIpBlockedException(Exception):
+    """Raised when YouTube blocks the IP address from fetching subtitles."""
+    pass
+
+
 class SubtitleSnippet(BaseModel):
     """Single subtitle snippet with timing."""
 
@@ -188,10 +193,14 @@ def fetch_video_transcript(metadata: VideoMetadata, max_retries: int = 2) -> Opt
         except Exception as e:
             err_msg = str(e)
             is_blocked = "blocking requests from your IP" in err_msg or "429" in err_msg or "IpBlocked" in type(e).__name__
-            if is_blocked and attempt < max_retries:
-                logger.warning(f"YouTube rate limit/IP block on {video_id}. Retrying after 3 seconds (attempt {attempt}/{max_retries})...")
-                time.sleep(3.0)
-                continue
+            if is_blocked:
+                if attempt < max_retries:
+                    logger.warning(f"YouTube rate limit/IP block on {video_id}. Retrying after 3 seconds (attempt {attempt}/{max_retries})...")
+                    time.sleep(3.0)
+                    continue
+                logger.warning(f"YouTube rate limit/IP block confirmed on {video_id}. Triggering circuit breaker.")
+                raise YouTubeIpBlockedException(f"YouTube rate limit/IP blocked on {video_id}: {e}")
+
             logger.warning(f"Failed to retrieve transcript list for {video_id} ({metadata.title}): {e}")
             return None
 
@@ -261,10 +270,14 @@ def fetch_video_transcript(metadata: VideoMetadata, max_retries: int = 2) -> Opt
         except Exception as e:
             err_msg = str(e)
             is_blocked = "blocking requests from your IP" in err_msg or "429" in err_msg or "IpBlocked" in type(e).__name__
-            if is_blocked and attempt < max_retries:
-                logger.warning(f"YouTube rate limit on fetch for {video_id}. Retrying after 3 seconds...")
-                time.sleep(3.0)
-                continue
+            if is_blocked:
+                if attempt < max_retries:
+                    logger.warning(f"YouTube rate limit on fetch for {video_id}. Retrying after 3 seconds...")
+                    time.sleep(3.0)
+                    continue
+                logger.warning(f"YouTube rate limit on fetch confirmed for {video_id}. Triggering circuit breaker.")
+                raise YouTubeIpBlockedException(f"YouTube rate limit/IP blocked on fetch for {video_id}: {e}")
+
             logger.warning(f"Failed to fetch content of selected transcript for {video_id}: {e}")
             return None
 
@@ -297,3 +310,46 @@ def fetch_video_transcript(metadata: VideoMetadata, max_retries: int = 2) -> Opt
         language=language_code,
         is_generated=is_generated,
     )
+
+
+def download_video_audio(metadata: VideoMetadata, target_dir: str = "/tmp") -> Optional[Any]:
+    """Download audio-only stream for a video using yt-dlp at low bitrate (efficient for LLM).
+
+    Args:
+        metadata: VideoMetadata object.
+        target_dir: Directory where the temporary audio will be stored.
+
+    Returns:
+        Path of the downloaded audio file, or None if failed.
+    """
+    import os
+    from pathlib import Path
+
+    video_id = metadata.video_id
+    url = metadata.url or f"https://www.youtube.com/watch?v={video_id}"
+    outtmpl = os.path.join(target_dir, f"ykh_audio_{video_id}.%(ext)s")
+
+    ydl_opts = {
+        "format": "ba[abr<=64]/ba/b",
+        "outtmpl": outtmpl,
+        "quiet": True,
+        "no_warnings": True,
+        "ignoreerrors": True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+        # Find the downloaded file
+        for ext in ["webm", "m4a", "opus", "mp3", "ogg"]:
+            candidate = Path(target_dir) / f"ykh_audio_{video_id}.{ext}"
+            if candidate.exists() and candidate.stat().st_size > 0:
+                logger.info(f"Successfully downloaded audio for {video_id}: {candidate} ({candidate.stat().st_size} bytes)")
+                return candidate
+
+        logger.warning(f"Audio file for {video_id} was not found after download.")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to download audio for {video_id}: {e}")
+        return None
