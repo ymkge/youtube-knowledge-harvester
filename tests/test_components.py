@@ -124,7 +124,19 @@ class TestSummarizer(unittest.TestCase):
 
         self.assertIn("Audio Title", result)
         mock_client.files.upload.assert_called_once()
+        # Verify that UploadFileConfig with mime_type='audio/webm' was passed
+        _, kwargs = mock_client.files.upload.call_args
+        self.assertIn("config", kwargs)
+        self.assertEqual(kwargs["config"].mime_type, "audio/webm")
         mock_client.files.delete.assert_called_once_with(name="files/test_audio_123")
+
+    def test_get_audio_mime_type(self):
+        from core.summarizer import get_audio_mime_type
+        self.assertEqual(get_audio_mime_type("test.webm"), "audio/webm")
+        self.assertEqual(get_audio_mime_type("test.m4a"), "audio/mp4")
+        self.assertEqual(get_audio_mime_type("test.mp3"), "audio/mp3")
+        self.assertEqual(get_audio_mime_type("test.ogg"), "audio/ogg")
+        self.assertEqual(get_audio_mime_type("test.unknown"), "audio/webm")
 
 
 class TestExporter(unittest.TestCase):

@@ -41,6 +41,23 @@ def is_transient_error(error: Any) -> bool:
     return any(p in err_str for p in RETRYABLE_PATTERNS)
 
 
+def get_audio_mime_type(file_path: Any) -> str:
+    """Determine audio MIME type from file extension."""
+    from pathlib import Path
+    suffix = Path(file_path).suffix.lower()
+    mime_map = {
+        ".webm": "audio/webm",
+        ".m4a": "audio/mp4",
+        ".mp3": "audio/mp3",
+        ".ogg": "audio/ogg",
+        ".opus": "audio/opus",
+        ".wav": "audio/wav",
+        ".aac": "audio/aac",
+        ".flac": "audio/flac",
+    }
+    return mime_map.get(suffix, "audio/webm")
+
+
 def format_published_date(date_str: Optional[str]) -> str:
     """Format YYYYMMDD string to YYYY-MM-DD."""
     if not date_str:
@@ -306,10 +323,16 @@ summary: "動画全体の要約を150字程度で簡潔かつ具体的に記述�
         try:
             for attempt in range(1, max_retries + 1):
                 try:
-                    # 1. Upload audio file if not already uploaded
+                    # 1. Upload audio file with explicit audio MIME type
                     if uploaded_file is None:
-                        logger.info(f"Uploading audio file {audio_path.name} to Gemini API (attempt {attempt}/{max_retries})...")
-                        uploaded_file = self.client.files.upload(file=str(audio_path))
+                        mime_type = get_audio_mime_type(audio_path)
+                        logger.info(
+                            f"Uploading audio file {audio_path.name} ({mime_type}) to Gemini API (attempt {attempt}/{max_retries})..."
+                        )
+                        uploaded_file = self.client.files.upload(
+                            file=str(audio_path),
+                            config=types.UploadFileConfig(mime_type=mime_type),
+                        )
 
                         # 2. Wait until file state becomes ACTIVE (Google GenAI processing wait)
                         for _ in range(20):
@@ -317,7 +340,8 @@ summary: "動画全体の要約を150字程度で簡潔かつ具体的に記述�
                             if "ACTIVE" in state_str:
                                 break
                             if "FAILED" in state_str:
-                                raise RuntimeError(f"Geminiサーバー上でのファイル処理に失敗しました (state: {state_str})")
+                                err_detail = getattr(uploaded_file, "error", "")
+                                raise RuntimeError(f"Geminiサーバー上でのファイル処理に失敗しました (state: {state_str}, error: {err_detail})")
                             time.sleep(1.0)
                             try:
                                 uploaded_file = self.client.files.get(name=uploaded_file.name)
