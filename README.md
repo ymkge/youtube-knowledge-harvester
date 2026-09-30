@@ -74,7 +74,7 @@ cp .env.example .env
 GEMINI_API_KEY=your_actual_gemini_api_key_here
 ```
 > [!TIP]
-> Gemini API Keyは [Google AI Studio](https://aistudio.google.com/) から無料で即座に取得できます。Web UI上のサイドバーから直接入力・上書きすることも可能です。
+> Gemini API Keyは [Google AI Studio](https://aistudio.google.com/) から無料で即座に取得できます。セキュリティ保護のため、APIキーはWeb UI上には表示されず、`.env` ファイルからのみ安全に読み込まれます。
 
 ### 4. Web UIの起動
 

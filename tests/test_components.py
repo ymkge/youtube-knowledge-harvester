@@ -94,6 +94,37 @@ class TestSummarizer(unittest.TestCase):
         self.assertIn("summary:", prompt)
         self.assertIn("💡 要点 (TL;DR)", prompt)
 
+    @patch("core.summarizer.genai.Client")
+    def test_summarize_audio(self, mock_client_cls):
+        from core.summarizer import GeminiSummarizer
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+
+        mock_file = MagicMock()
+        mock_file.name = "files/test_audio_123"
+        mock_client.files.upload.return_value = mock_file
+
+        mock_response = MagicMock()
+        mock_response.text = "---\ntitle: Audio Title\n---\n# Audio Title"
+        mock_client.models.generate_content.return_value = mock_response
+
+        summarizer = GeminiSummarizer(api_key="fake-key")
+        meta = VideoMetadata(
+            video_id="vid123",
+            title="Audio Title",
+            url="https://www.youtube.com/watch?v=vid123",
+        )
+
+        import tempfile
+        from pathlib import Path
+        with tempfile.NamedTemporaryFile(suffix=".webm") as tmp:
+            result = summarizer.summarize_audio(audio_path=tmp.name, metadata=meta)
+
+        self.assertIn("Audio Title", result)
+        mock_client.files.upload.assert_called_once()
+        mock_client.files.delete.assert_called_once_with(name="files/test_audio_123")
+
 
 class TestExporter(unittest.TestCase):
     def test_sanitize_filename(self):
