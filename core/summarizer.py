@@ -1,0 +1,158 @@
+"""Gemini API summarization module for RAG-oriented structured Markdown."""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+from typing import Optional
+from google import genai
+from google.genai import types
+from core.extractor import VideoTranscriptData
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_MODEL = "gemini-2.5-flash"
+
+
+def format_published_date(date_str: Optional[str]) -> str:
+    """Format YYYYMMDD string to YYYY-MM-DD."""
+    if not date_str:
+        return "Unknown"
+    date_str = date_str.strip()
+    if len(date_str) == 8 and date_str.isdigit():
+        return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+    return date_str
+
+
+def clean_markdown_output(text: str) -> str:
+    """Strip markdown code fence wrapper if present."""
+    text = text.strip()
+    # Match ```markdown ... ``` or ``` ... ```
+    pattern = r"^```(?:markdown)?\s*\n(.*?)\n```$"
+    match = re.search(pattern, text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return text
+
+
+def build_prompt(transcript_data: VideoTranscriptData) -> str:
+    """Build structured prompt for Gemini model."""
+    meta = transcript_data.metadata
+    published_at = format_published_date(meta.upload_date)
+    timestamped_transcript = transcript_data.formatted_transcript_text()
+
+    prompt = f"""あなたはAIエージェントおよびRAG（Retrieval-Augmented Generation）システムのための高品質なナレッジ作成専門家です。
+以下のYouTube動画のメタデータとタイムスタンプ付き字幕テキストを解析し、後続のAIエージェントが正確かつ迅速に情報を参照・引用できる構造化Markdown（.md）を作成してください。
+
+### 対象動画メタデータ:
+- video_id: {meta.video_id}
+- title: {meta.title}
+- channel: {meta.channel}
+- source_url: {meta.url}
+- published_at: {published_at}
+
+### タイムスタンプ付き字幕テキスト:
+{timestamped_transcript}
+
+---
+
+### 出力フォーマット要件（厳格遵守）:
+必ず以下の構造のみを出力してください。挨拶文や前置き、解説、全体のバッククォート囲み（```markdown など）は一切含めず、先頭行の「---」から直接出力してください。
+
+---
+title: "{meta.title.replace('"', "'")}"
+video_id: "{meta.video_id}"
+channel: "{meta.channel.replace('"', "'")}"
+source_url: "{meta.url}"
+published_at: "{published_at}"
+tags:
+  - "タグ1"
+  - "タグ2"
+  - "タグ3"
+summary: "動画全体の要約を150字程度で簡潔かつ具体的に記述してください。"
+---
+
+# {meta.title}
+
+## 💡 要点 (TL;DR)
+- 要点1（本質的・具体的な内容）
+- 要点2
+- 要点3（3〜5項目）
+
+## 📖 トピック別詳細
+
+### [MM:SS] トピック見出し1
+> 🔗 [該当箇所を再生](https://www.youtube.com/watch?v={meta.video_id}&t=開始秒s)
+
+トピックの内容を詳細にまとめます。
+- AIエージェントが参照・再利用しやすいよう、単なる箇条書きだけでなく、重要な概念、具体的な手順、Tips、コマンドやコード例（あれば）、注意点などを明瞭に構造化してください。
+- 該当箇所へのリンクURL末尾の「t=開始秒s」は、該当セクションの開始秒数（例: 03:15 なら t=195s）を正しく計算して記載してください。
+
+### [MM:SS] トピック見出し2
+> 🔗 [該当箇所を再生](https://www.youtube.com/watch?v={meta.video_id}&t=開始秒s)
+
+...（動画全体のトピックごとにセクションを分割して作成）
+
+### 指針:
+1. 日本語で高品質に出力してください（元の字幕が英語の場合でも日本語に分かりやすく翻訳・要約してください）。
+2. 事実に基づき、ハルシネーション（字幕に含まれない推測の断定）を避けてください。
+3. トピック別詳細は、動画の主要な展開を漏れなく網羅してください。
+"""
+    return prompt
+
+
+class GeminiSummarizer:
+    """Summarizer using google-genai SDK."""
+
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+        """Initialize the Gemini client.
+
+        Args:
+            api_key: Gemini API Key. If None, reads from GEMINI_API_KEY environment variable.
+            model: Model name. If None, reads from GEMINI_MODEL or defaults to gemini-2.5-flash.
+        """
+        self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
+        if not self.api_key:
+            raise ValueError(
+                "Gemini APIキーが設定されていません。.env ファイルまたは引数で GEMINI_API_KEY を設定してください。"
+            )
+
+        self.model_name = model or os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
+        self.client = genai.Client(api_key=self.api_key)
+
+    def summarize(self, transcript_data: VideoTranscriptData) -> str:
+        """Generate structured markdown from video transcript.
+
+        Args:
+            transcript_data: VideoTranscriptData containing metadata and subtitles.
+
+        Returns:
+            Structured Markdown string.
+        """
+        prompt = build_prompt(transcript_data)
+
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                ),
+            )
+        except Exception as e:
+            logger.error(f"Gemini API call failed for video {transcript_data.metadata.video_id}: {e}")
+            raise RuntimeError(f"Gemini APIによる要約生成に失敗しました: {e}") from e
+
+        if not response or not response.text:
+            raise RuntimeError("Gemini APIから空の応答が返されました。")
+
+        markdown_text = clean_markdown_output(response.text)
+
+        # Basic validation: ensure frontmatter exists
+        if not markdown_text.startswith("---"):
+            logger.warning(
+                f"Generated markdown for {transcript_data.metadata.video_id} does not start with YAML frontmatter."
+            )
+
+        return markdown_text
