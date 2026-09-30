@@ -62,13 +62,12 @@ init_session_state()
 with st.sidebar:
     st.header("⚙️ 設定 (Settings)")
 
-    env_api_key = os.environ.get("GEMINI_API_KEY", "")
-    api_key_input = st.text_input(
-        "Gemini API Key",
-        value=env_api_key,
-        type="password",
-        help="Gemini APIを利用するためのキー。.env に GEMINI_API_KEY を設定している場合は自動入力されます。",
-    )
+    env_api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if env_api_key:
+        st.success("🔒 Gemini API Key: 設定済み (.env)")
+    else:
+        st.error("⚠️ Gemini API Key: 未設定 (.env を確認)")
+    st.caption("※ セキュリティ保護のため、APIキーは画面上に表示されません。`.env` ファイルからのみ読み込まれます。")
 
     model_input = st.selectbox(
         "Gemini モデル",
@@ -182,8 +181,8 @@ with st.form("harvester_form"):
 if submit_button:
     if not channel_url.strip():
         st.error("YouTubeチャンネルURLを入力してください。")
-    elif not api_key_input.strip():
-        st.error("Gemini API Key を入力するか、.env ファイルに GEMINI_API_KEY を設定してください。")
+    elif not env_api_key:
+        st.error("⚠️ Gemini API Key が設定されていません。プロジェクト直下の .env ファイルに GEMINI_API_KEY を設定してください。")
     else:
         st.session_state.is_processing = True
         st.session_state.results = []
@@ -192,7 +191,7 @@ if submit_button:
         st.session_state.stats = {"success": 0, "no_transcript": 0, "error": 0, "total": 0}
 
         try:
-            summarizer = GeminiSummarizer(api_key=api_key_input.strip(), model=model_input.strip())
+            summarizer = GeminiSummarizer(api_key=env_api_key, model=model_input.strip())
             exporter = MarkdownExporter(output_dir=output_dir.strip())
         except Exception as e:
             st.error(f"初期化エラー: {e}")
