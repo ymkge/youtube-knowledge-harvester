@@ -45,7 +45,13 @@ def init_session_state():
     if "zip_data" not in st.session_state:
         st.session_state.zip_data = None
     if "stats" not in st.session_state:
-        st.session_state.stats = {"success": 0, "no_transcript": 0, "error": 0, "total": 0}
+        st.session_state.stats = {
+            "success": 0,
+            "skipped_existing": 0,
+            "no_transcript": 0,
+            "error": 0,
+            "total": 0,
+        }
 
 
 init_session_state()
@@ -69,10 +75,25 @@ with st.sidebar:
         help="利用するGeminiモデルを選択してください（デフォルト: gemini-flash-latest）。",
     )
 
+    interval_sec = st.slider(
+        "リクエスト間隔 (秒)",
+        min_value=1.0,
+        max_value=10.0,
+        value=3.0,
+        step=0.5,
+        help="各動画処理ごとの待機時間。YouTubeおよびGemini APIのレート制限（429エラーやIP制限）を防ぐため2.5秒以上を推奨します。",
+    )
+
     prefix_date_option = st.checkbox(
         "ファイル名に投稿日を付加する",
         value=True,
         help="ON: {YYYYMMDD}_{video_id}.md / OFF: {video_id}.md",
+    )
+
+    skip_existing_option = st.checkbox(
+        "既存ファイルをスキップ (差分実行)",
+        value=True,
+        help="出力先にすでに存在する動画の再取得・再生成をスキップし、未処理分のみを高速に実行します。",
     )
 
     st.markdown("---")
@@ -182,6 +203,30 @@ if submit_button:
                     f"**⏳ [{idx}/{total_videos}] 処理中: [{video.title}]({video.url})**"
                 )
 
+            filename = generate_filename(video, prefix_date=prefix_date_option)
+            target_file_path = exporter.output_dir / filename
+
+            # 0. 既存ファイルスキップ判定 (差分実行)
+            if skip_existing_option and target_file_path.exists():
+                try:
+                    existing_content = target_file_path.read_text(encoding="utf-8")
+                    saved_files[filename] = existing_content
+                    st.session_state.results.append(
+                        {
+                            "title": video.title,
+                            "video_id": video.video_id,
+                            "url": video.url,
+                            "path": str(target_file_path),
+                            "filename": filename,
+                            "content": existing_content,
+                        }
+                    )
+                    st.session_state.stats["skipped_existing"] += 1
+                    append_log(f"⏩ [{idx}/{total_videos}] 既存ファイルを検出したためスキップ: {filename}")
+                    continue
+                except Exception:
+                    pass
+
             append_log(f"▶ [{idx}/{total_videos}] 字幕を取得中: {video.title} ({video.video_id})")
 
             # 1. 字幕取得
@@ -189,6 +234,7 @@ if submit_button:
             if not transcript_data:
                 append_log(f"⚠️ [{idx}/{total_videos}] 字幕が存在しないか取得できなかったためスキップ: {video.title}")
                 st.session_state.stats["no_transcript"] += 1
+                time.sleep(interval_sec)
                 continue
 
             append_log(
@@ -196,17 +242,26 @@ if submit_button:
                 f"自動生成: {transcript_data.is_generated})。GeminiでMarkdown生成中..."
             )
 
-            # 2. Gemini要約
+            # 2. Gemini要約 (リトライ・レート制限対応)
+            def on_gemini_retry(attempt: int, wait_sec: float, err: str):
+                append_log(
+                    f"⏳ [{idx}/{total_videos}] Gemini APIレート制限（429）を検知。"
+                    f" {wait_sec:.0f}秒待機して再試行します (試行 {attempt}/3)..."
+                )
+
             try:
-                markdown_content = summarizer.summarize(transcript_data)
+                markdown_content = summarizer.summarize(
+                    transcript_data,
+                    on_retry=on_gemini_retry,
+                )
             except Exception as e:
                 append_log(f"❌ [{idx}/{total_videos}] Gemini要約失敗 ({video.title}): {e}")
                 logger.error(f"Failed to summarize video {video.video_id}: {e}")
                 st.session_state.stats["error"] += 1
+                time.sleep(interval_sec)
                 continue
 
             # 3. ローカル保存
-            filename = generate_filename(video, prefix_date=prefix_date_option)
             try:
                 saved_path = exporter.save_markdown(filename, markdown_content)
                 saved_files[filename] = markdown_content
@@ -226,7 +281,7 @@ if submit_button:
                 append_log(f"❌ [{idx}/{total_videos}] 保存失敗 ({filename}): {e}")
                 st.session_state.stats["error"] += 1
 
-            time.sleep(0.5)  # Rate limiting buffer
+            time.sleep(interval_sec)
 
         # ZIPアーカイブ作成
         if saved_files:
@@ -241,11 +296,12 @@ if st.session_state.results:
     st.markdown("---")
     st.subheader("📊 処理結果サマリー")
 
-    stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+    stat_col1, stat_col2, stat_col3, stat_col4, stat_col5 = st.columns(5)
     stat_col1.metric("走査対象動画", st.session_state.stats["total"])
-    stat_col2.metric("生成成功", st.session_state.stats["success"])
-    stat_col3.metric("字幕なしスキップ", st.session_state.stats["no_transcript"])
-    stat_col4.metric("エラー", st.session_state.stats["error"])
+    stat_col2.metric("新規保存成功", st.session_state.stats["success"])
+    stat_col3.metric("既存スキップ", st.session_state.stats.get("skipped_existing", 0))
+    stat_col4.metric("字幕なしスキップ", st.session_state.stats["no_transcript"])
+    stat_col5.metric("エラー", st.session_state.stats["error"])
 
     # Download Button
     if st.session_state.zip_data:
