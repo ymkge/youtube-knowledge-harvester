@@ -18,7 +18,7 @@ from core.extractor import (
     fetch_channel_videos,
     fetch_video_transcript,
 )
-from core.summarizer import DEFAULT_MODEL, GeminiSummarizer
+from core.summarizer import AVAILABLE_MODELS, DEFAULT_MODEL, GeminiSummarizer
 
 # Load .env file
 load_dotenv()
@@ -62,11 +62,11 @@ with st.sidebar:
         help="Gemini APIを利用するためのキー。.env に GEMINI_API_KEY を設定している場合は自動入力されます。",
     )
 
-    env_model = os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
-    model_input = st.text_input(
-        "Gemini モデル名",
-        value=env_model,
-        help="利用するモデル（例: gemini-2.5-flash, gemini-2.0-flash など）",
+    model_input = st.selectbox(
+        "Gemini モデル",
+        options=AVAILABLE_MODELS,
+        index=0,
+        help="利用するGeminiモデルを選択してください（デフォルト: gemini-flash-latest）。",
     )
 
     prefix_date_option = st.checkbox(
