@@ -10,6 +10,8 @@ from google import genai
 from google.genai import types
 from core.extractor import VideoTranscriptData
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_MODEL = "gemini-flash-latest"
 AVAILABLE_MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"]
 
