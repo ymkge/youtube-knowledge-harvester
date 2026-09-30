@@ -15,6 +15,29 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "gemini-flash-latest"
 AVAILABLE_MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"]
 
+RETRYABLE_PATTERNS = [
+    "429",
+    "resource_exhausted",
+    "quotaexceeded",
+    "503",
+    "unavailable",
+    "high demand",
+    "serviceunavailable",
+    "500",
+    "502",
+    "504",
+    "bad gateway",
+    "gateway timeout",
+    "deadlineexceeded",
+    "timeout",
+]
+
+
+def is_transient_error(error: Any) -> bool:
+    """Check if the error is temporary (rate limit 429, server overload 503, timeout)."""
+    err_str = str(error).lower()
+    return any(p in err_str for p in RETRYABLE_PATTERNS)
+
 
 def format_published_date(date_str: Optional[str]) -> str:
     """Format YYYYMMDD string to YYYY-MM-DD."""
@@ -143,11 +166,12 @@ class GeminiSummarizer:
         import time
 
         prompt = build_prompt(transcript_data)
+        current_model = self.model_name
 
         for attempt in range(1, max_retries + 1):
             try:
                 response = self.client.models.generate_content(
-                    model=self.model_name,
+                    model=current_model,
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         temperature=0.2,
@@ -167,14 +191,20 @@ class GeminiSummarizer:
 
             except Exception as e:
                 err_str = str(e)
-                is_rate_limit = any(
-                    code in err_str for code in ["429", "RESOURCE_EXHAUSTED", "ResourceExhausted", "QuotaExceeded"]
-                )
-
-                if is_rate_limit and attempt < max_retries:
+                if is_transient_error(e) and attempt < max_retries:
                     wait_sec = initial_backoff * (2 ** (attempt - 1))
+
+                    # If 503 high demand on flash-latest, fallback to flash-lite for next attempt
+                    if any(p in err_str.lower() for p in ["503", "unavailable", "high demand"]):
+                        if current_model == "gemini-flash-latest":
+                            current_model = "gemini-flash-lite-latest"
+                            logger.info(
+                                f"Switching to fallback model '{current_model}' due to high demand on Gemini API."
+                            )
+
                     logger.warning(
-                        f"Rate limit encountered on {transcript_data.metadata.video_id}. Retrying in {wait_sec}s (attempt {attempt}/{max_retries})..."
+                        f"Transient error on {transcript_data.metadata.video_id}: {e}. "
+                        f"Retrying with '{current_model}' in {wait_sec}s (attempt {attempt}/{max_retries})..."
                     )
                     if on_retry:
                         try:
@@ -274,10 +304,11 @@ summary: "動画全体の要約を150字程度で簡潔かつ具体的に記述�
             logger.info(f"Uploading audio file {audio_path.name} to Gemini API...")
             uploaded_file = self.client.files.upload(file=str(audio_path))
 
+            current_model = self.model_name
             for attempt in range(1, max_retries + 1):
                 try:
                     response = self.client.models.generate_content(
-                        model=self.model_name,
+                        model=current_model,
                         contents=[uploaded_file, audio_prompt],
                         config=types.GenerateContentConfig(
                             temperature=0.2,
@@ -295,13 +326,20 @@ summary: "動画全体の要約を150字程度で簡潔かつ具体的に記述�
 
                 except Exception as e:
                     err_str = str(e)
-                    is_rate_limit = any(
-                        code in err_str for code in ["429", "RESOURCE_EXHAUSTED", "ResourceExhausted", "QuotaExceeded"]
-                    )
-                    if is_rate_limit and attempt < max_retries:
+                    if is_transient_error(e) and attempt < max_retries:
                         wait_sec = initial_backoff * (2 ** (attempt - 1))
+
+                        # If 503 high demand on flash-latest, fallback to flash-lite for next attempt
+                        if any(p in err_str.lower() for p in ["503", "unavailable", "high demand"]):
+                            if current_model == "gemini-flash-latest":
+                                current_model = "gemini-flash-lite-latest"
+                                logger.info(
+                                    f"Switching audio summarization to fallback model '{current_model}' due to high demand."
+                                )
+
                         logger.warning(
-                            f"Rate limit on audio {metadata.video_id}. Retrying in {wait_sec}s (attempt {attempt}/{max_retries})..."
+                            f"Transient error on audio {metadata.video_id}: {e}. "
+                            f"Retrying with '{current_model}' in {wait_sec}s (attempt {attempt}/{max_retries})..."
                         )
                         if on_retry:
                             try:

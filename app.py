@@ -238,8 +238,15 @@ if submit_button:
             append_log("🎙️ 【最初から音声モード】が有効です。YouTube字幕APIを完全バイパスし、音声ストリームから直接ナレッジを抽出します。")
 
         def on_gemini_retry(attempt: int, wait_sec: float, err: str):
+            err_lower = err.lower()
+            if any(p in err_lower for p in ["503", "unavailable", "high demand"]):
+                reason = "Google側の一時的高負荷 (503 UNAVAILABLE)"
+            elif any(p in err_lower for p in ["429", "resource_exhausted", "quota"]):
+                reason = "Gemini APIレート制限 (429)"
+            else:
+                reason = "Gemini API一時通信エラー"
             append_log(
-                f"⏳ Gemini APIレート制限（429）を検知。{wait_sec:.0f}秒待機して再試行します (試行 {attempt}/3)..."
+                f"⏳ {reason}を検知。{wait_sec:.0f}秒待機して再試行します (試行 {attempt}/3)..."
             )
 
         for idx, video in enumerate(videos, start=1):
