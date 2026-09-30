@@ -242,6 +242,8 @@ if submit_button:
                 reason = "Google側の一時的高負荷 (503 UNAVAILABLE)"
             elif any(p in err_lower for p in ["429", "resource_exhausted", "quota"]):
                 reason = "Gemini APIレート制限 (429)"
+            elif any(p in err_lower for p in ["failed_precondition", "active state"]):
+                reason = "Geminiファイル処理待機・再アップロード (400)"
             else:
                 reason = "Gemini API一時通信エラー"
             append_log(
