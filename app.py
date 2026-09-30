@@ -15,6 +15,8 @@ from core.exporter import MarkdownExporter, generate_filename
 from core.extractor import (
     VideoMetadata,
     VideoTranscriptData,
+    YouTubeIpBlockedException,
+    download_video_audio,
     fetch_channel_videos,
     fetch_video_transcript,
 )
@@ -126,6 +128,12 @@ with st.sidebar:
         help="出力先にすでに存在する動画の再取得・再生成をスキップし、未処理分のみを高速に実行します。",
     )
 
+    bypass_subtitles_to_audio = st.checkbox(
+        "最初から音声モードで取得 (字幕APIをバイパス)",
+        value=False,
+        help="現在YouTubeからIPブロック（429エラー）を受けている場合や、字幕APIを一切使わずに安全に音声認識で取得したい場合にONにしてください。",
+    )
+
     st.markdown("---")
     st.markdown("### 💡 について")
     st.caption(
@@ -224,6 +232,15 @@ if submit_button:
 
         saved_files: Dict[str, str] = {}
         processed_count = 0  # 実アクセス（字幕取得・API呼び出し）を行った件数カウント
+        audio_mode_active = bool(bypass_subtitles_to_audio)
+
+        if audio_mode_active:
+            append_log("🎙️ 【最初から音声モード】が有効です。YouTube字幕APIを完全バイパスし、音声ストリームから直接ナレッジを抽出します。")
+
+        def on_gemini_retry(attempt: int, wait_sec: float, err: str):
+            append_log(
+                f"⏳ Gemini APIレート制限（429）を検知。{wait_sec:.0f}秒待機して再試行します (試行 {attempt}/3)..."
+            )
 
         for idx, video in enumerate(videos, start=1):
             progress_ratio = idx / total_videos
@@ -259,39 +276,101 @@ if submit_button:
                     pass
 
             processed_count += 1
-            append_log(f"▶ [{idx}/{total_videos}] 字幕を取得中: {video.title} ({video.video_id})")
+            markdown_content = None
 
-            # 1. 字幕取得
-            transcript_data = fetch_video_transcript(video)
-            if not transcript_data:
-                append_log(f"⚠️ [{idx}/{total_videos}] 字幕が存在しないか取得できなかったためスキップ: {video.title}")
-                st.session_state.stats["no_transcript"] += 1
-                time.sleep(interval_sec)
-                continue
+            # 1. 音声モード（最初からON、またはサーキットブレーカー発動後）
+            if audio_mode_active:
+                append_log(f"🎙️ [{idx}/{total_videos}] 音声ストリームを取得中: {video.title} ({video.video_id})")
+                audio_path = download_video_audio(video)
+                if not audio_path:
+                    append_log(f"❌ [{idx}/{total_videos}] 音声ストリーム取得失敗のためスキップ: {video.title}")
+                    st.session_state.stats["error"] += 1
+                    time.sleep(interval_sec)
+                    continue
 
-            append_log(
-                f"📝 [{idx}/{total_videos}] 字幕取得成功 (言語: {transcript_data.language}, "
-                f"自動生成: {transcript_data.is_generated})。GeminiでMarkdown生成中..."
-            )
+                append_log(f"🤖 [{idx}/{total_videos}] 音声からGeminiでMarkdown生成中...")
+                try:
+                    markdown_content = summarizer.summarize_audio(
+                        audio_path=audio_path,
+                        metadata=video,
+                        on_retry=on_gemini_retry,
+                    )
+                except Exception as e:
+                    append_log(f"❌ [{idx}/{total_videos}] Gemini音声要約失敗 ({video.title}): {e}")
+                    logger.error(f"Failed to summarize audio for {video.video_id}: {e}")
+                    st.session_state.stats["error"] += 1
+                    time.sleep(interval_sec)
+                    continue
+                finally:
+                    if audio_path and Path(audio_path).exists():
+                        try:
+                            Path(audio_path).unlink(missing_ok=True)
+                        except Exception:
+                            pass
 
-            # 2. Gemini要約 (リトライ・レート制限対応)
-            def on_gemini_retry(attempt: int, wait_sec: float, err: str):
-                append_log(
-                    f"⏳ [{idx}/{total_videos}] Gemini APIレート制限（429）を検知。"
-                    f" {wait_sec:.0f}秒待機して再試行します (試行 {attempt}/3)..."
-                )
+            else:
+                # 2. 通常字幕モード（IPブロック検知時に自動サーキットブレーカー発動）
+                append_log(f"▶ [{idx}/{total_videos}] 字幕を取得中: {video.title} ({video.video_id})")
+                try:
+                    transcript_data = fetch_video_transcript(video)
+                except YouTubeIpBlockedException:
+                    append_log(
+                        f"⚡ [{idx}/{total_videos}] YouTubeのIPアクセス制限（429）を検知しました。"
+                        f"自動サーキットブレーカーが発動し、以降の全動画を【音声ストリーム直接取得モード】に切り替えます！"
+                    )
+                    audio_mode_active = True
 
-            try:
-                markdown_content = summarizer.summarize(
-                    transcript_data,
-                    on_retry=on_gemini_retry,
-                )
-            except Exception as e:
-                append_log(f"❌ [{idx}/{total_videos}] Gemini要約失敗 ({video.title}): {e}")
-                logger.error(f"Failed to summarize video {video.video_id}: {e}")
-                st.session_state.stats["error"] += 1
-                time.sleep(interval_sec)
-                continue
+                    # 当該動画も即座に音声フォールバックで救済
+                    append_log(f"🎙️ [{idx}/{total_videos}] 音声ストリームへ自動フォールバック中...")
+                    audio_path = download_video_audio(video)
+                    if not audio_path:
+                        append_log(f"❌ [{idx}/{total_videos}] 音声ストリーム取得失敗のためスキップ: {video.title}")
+                        st.session_state.stats["error"] += 1
+                        time.sleep(interval_sec)
+                        continue
+
+                    try:
+                        markdown_content = summarizer.summarize_audio(
+                            audio_path=audio_path,
+                            metadata=video,
+                            on_retry=on_gemini_retry,
+                        )
+                    except Exception as e:
+                        append_log(f"❌ [{idx}/{total_videos}] Gemini音声要約失敗 ({video.title}): {e}")
+                        logger.error(f"Failed to summarize audio for {video.video_id}: {e}")
+                        st.session_state.stats["error"] += 1
+                        time.sleep(interval_sec)
+                        continue
+                    finally:
+                        if audio_path and Path(audio_path).exists():
+                            try:
+                                Path(audio_path).unlink(missing_ok=True)
+                            except Exception:
+                                pass
+
+                else:
+                    if not transcript_data:
+                        append_log(f"⚠️ [{idx}/{total_videos}] 字幕が存在しないか取得できなかったためスキップ: {video.title}")
+                        st.session_state.stats["no_transcript"] += 1
+                        time.sleep(interval_sec)
+                        continue
+
+                    append_log(
+                        f"📝 [{idx}/{total_videos}] 字幕取得成功 (言語: {transcript_data.language}, "
+                        f"自動生成: {transcript_data.is_generated})。GeminiでMarkdown生成中..."
+                    )
+
+                    try:
+                        markdown_content = summarizer.summarize(
+                            transcript_data,
+                            on_retry=on_gemini_retry,
+                        )
+                    except Exception as e:
+                        append_log(f"❌ [{idx}/{total_videos}] Gemini要約失敗 ({video.title}): {e}")
+                        logger.error(f"Failed to summarize video {video.video_id}: {e}")
+                        st.session_state.stats["error"] += 1
+                        time.sleep(interval_sec)
+                        continue
 
             # 3. ローカル保存
             try:

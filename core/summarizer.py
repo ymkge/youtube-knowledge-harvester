@@ -184,3 +184,139 @@ class GeminiSummarizer:
 
                 logger.error(f"Gemini API call failed for video {transcript_data.metadata.video_id}: {e}")
                 raise RuntimeError(f"Gemini APIによる要約生成に失敗しました: {e}") from e
+
+    def summarize_audio(
+        self,
+        audio_path: Any,
+        metadata: Any,
+        max_retries: int = 3,
+        initial_backoff: float = 10.0,
+        on_retry: Optional[Any] = None,
+    ) -> str:
+        """Generate structured markdown directly from audio file using Gemini Multimodal API.
+
+        Args:
+            audio_path: Path to the local audio file.
+            metadata: VideoMetadata object.
+            max_retries: Maximum retry attempts on rate limits.
+            initial_backoff: Initial wait time in seconds before retry.
+            on_retry: Optional callback function.
+
+        Returns:
+            Structured Markdown string.
+        """
+        import time
+        from pathlib import Path
+
+        audio_path = Path(audio_path)
+        published_at = format_published_date(metadata.upload_date)
+
+        audio_prompt = f"""あなたはAIエージェントおよびRAGシステムのための高品質なナレッジ作成専門家です。
+提供されたYouTube動画の音声を詳細に聴き取り・解析し、後続のAIエージェントが正確に参照・引用できる構造化Markdown（.md）を作成してください。
+
+### 対象動画メタデータ:
+- video_id: {metadata.video_id}
+- title: {metadata.title}
+- channel: {metadata.channel}
+- source_url: {metadata.url}
+- published_at: {published_at}
+
+---
+
+### 出力フォーマット要件（厳格遵守）:
+必ず以下の構造のみを出力してください。挨拶文や前置き、解説、全体のバッククォート囲み（```markdown など）は一切含めず、先頭行の「---」から直接出力してください。
+
+---
+title: "{metadata.title.replace('"', "'")}"
+video_id: "{metadata.video_id}"
+channel: "{metadata.channel.replace('"', "'")}"
+source_url: "{metadata.url}"
+published_at: "{published_at}"
+tags:
+  - "タグ1"
+  - "タグ2"
+  - "タグ3"
+summary: "動画全体の要約を150字程度で簡潔かつ具体的に記述してください。"
+---
+
+# {metadata.title}
+
+## 💡 要点 (TL;DR)
+- 要点1（本質的・具体的な内容）
+- 要点2
+- 要点3（3〜5項目）
+
+## 📖 トピック別詳細
+
+### [MM:SS] トピック見出し1
+> 🔗 [該当箇所を再生](https://www.youtube.com/watch?v={metadata.video_id}&t=開始秒s)
+
+トピックの内容を詳細にまとめます。
+- 音声中の該当トピックの開始時間を [MM:SS]（例: [01:23]）として正確に記載してください。
+- 該当箇所へのリンクURL末尾の「t=開始秒s」は、該当セクションの開始秒数（例: 01:23 なら t=83s）を正しく計算して記載してください。
+- 手順、Tips、重要概念、コマンドや具体例などを明瞭に構造化してください。
+
+### [MM:SS] トピック見出し2
+> 🔗 [該当箇所を再生](https://www.youtube.com/watch?v={metadata.video_id}&t=開始秒s)
+
+...（動画全体のトピックごとにセクションを分割して作成）
+
+### 指針:
+1. 日本語で高品質に出力してください。
+2. 音声内の実際の発言に基づき、ハルシネーションを避けてください。
+3. 動画全体の主要な展開を漏れなく網羅してください。
+"""
+
+        uploaded_file = None
+        try:
+            logger.info(f"Uploading audio file {audio_path.name} to Gemini API...")
+            uploaded_file = self.client.files.upload(file=str(audio_path))
+
+            for attempt in range(1, max_retries + 1):
+                try:
+                    response = self.client.models.generate_content(
+                        model=self.model_name,
+                        contents=[uploaded_file, audio_prompt],
+                        config=types.GenerateContentConfig(
+                            temperature=0.2,
+                        ),
+                    )
+                    if not response or not response.text:
+                        raise RuntimeError("Gemini APIから空の応答が返されました。")
+
+                    markdown_text = clean_markdown_output(response.text)
+                    if not markdown_text.startswith("---"):
+                        logger.warning(
+                            f"Generated markdown for {metadata.video_id} does not start with YAML frontmatter."
+                        )
+                    return markdown_text
+
+                except Exception as e:
+                    err_str = str(e)
+                    is_rate_limit = any(
+                        code in err_str for code in ["429", "RESOURCE_EXHAUSTED", "ResourceExhausted", "QuotaExceeded"]
+                    )
+                    if is_rate_limit and attempt < max_retries:
+                        wait_sec = initial_backoff * (2 ** (attempt - 1))
+                        logger.warning(
+                            f"Rate limit on audio {metadata.video_id}. Retrying in {wait_sec}s (attempt {attempt}/{max_retries})..."
+                        )
+                        if on_retry:
+                            try:
+                                on_retry(attempt, wait_sec, err_str)
+                            except Exception:
+                                pass
+                        time.sleep(wait_sec)
+                        continue
+                    raise e
+
+        except Exception as e:
+            logger.error(f"Gemini API audio summarization failed for {metadata.video_id}: {e}")
+            raise RuntimeError(f"Gemini APIによる音声要約に失敗しました: {e}") from e
+        finally:
+            if uploaded_file:
+                try:
+                    self.client.files.delete(name=uploaded_file.name)
+                    logger.info(f"Deleted remote Gemini audio file: {uploaded_file.name}")
+                except Exception as del_err:
+                    logger.warning(f"Failed to delete remote file {uploaded_file.name}: {del_err}")
