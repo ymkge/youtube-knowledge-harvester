@@ -138,7 +138,22 @@ def fetch_channel_videos(channel_url: str, max_results: int = 50) -> List[VideoM
     return results
 
 
-def fetch_video_transcript(metadata: VideoMetadata) -> Optional[VideoTranscriptData]:
+def _get_api_client():
+    """Create a YouTubeTranscriptApi instance with browser headers."""
+    import requests
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/128.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+    })
+    return YouTubeTranscriptApi(http_client=session)
+
+
+def fetch_video_transcript(metadata: VideoMetadata, max_retries: int = 2) -> Optional[VideoTranscriptData]:
     """Fetch transcript for a given video with fallback language order.
 
     Fallback Priority:
@@ -150,26 +165,37 @@ def fetch_video_transcript(metadata: VideoMetadata) -> Optional[VideoTranscriptD
 
     Args:
         metadata: VideoMetadata object.
+        max_retries: Number of retries on network/IP limit errors.
 
     Returns:
         VideoTranscriptData if transcript found, otherwise None.
     """
+    import time
     video_id = metadata.video_id
-    try:
-        # Support both youtube-transcript-api v1.x (instance.list) and legacy v0.x (class.list_transcripts)
-        if hasattr(YouTubeTranscriptApi, "list_transcripts"):
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        else:
-            api = YouTubeTranscriptApi()
-            transcript_list = api.list(video_id)
-    except (TranscriptsDisabled, NoTranscriptFound) as e:
-        logger.warning(f"No transcripts found for video {video_id} ({metadata.title}): {e}")
-        return None
-    except CouldNotRetrieveTranscript as e:
-        logger.warning(f"Could not retrieve transcripts for video {video_id} ({metadata.title}): {e}")
-        return None
-    except Exception as e:
-        logger.warning(f"Unexpected error retrieving transcript list for {video_id}: {e}")
+    transcript_list = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            if hasattr(YouTubeTranscriptApi, "list_transcripts"):
+                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            else:
+                api = _get_api_client()
+                transcript_list = api.list(video_id)
+            break
+        except (TranscriptsDisabled, NoTranscriptFound) as e:
+            logger.info(f"No transcripts available for video {video_id} ({metadata.title}): {e}")
+            return None
+        except Exception as e:
+            err_msg = str(e)
+            is_blocked = "blocking requests from your IP" in err_msg or "429" in err_msg or "IpBlocked" in type(e).__name__
+            if is_blocked and attempt < max_retries:
+                logger.warning(f"YouTube rate limit/IP block on {video_id}. Retrying after 3 seconds (attempt {attempt}/{max_retries})...")
+                time.sleep(3.0)
+                continue
+            logger.warning(f"Failed to retrieve transcript list for {video_id} ({metadata.title}): {e}")
+            return None
+
+    if not transcript_list:
         return None
 
     selected_transcript = None
@@ -227,10 +253,22 @@ def fetch_video_transcript(metadata: VideoMetadata) -> Optional[VideoTranscriptD
         logger.warning(f"No suitable transcript could be selected for video {video_id}")
         return None
 
-    try:
-        raw_items = selected_transcript.fetch()
-    except Exception as e:
-        logger.warning(f"Failed to fetch content of selected transcript for {video_id}: {e}")
+    raw_items = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            raw_items = selected_transcript.fetch()
+            break
+        except Exception as e:
+            err_msg = str(e)
+            is_blocked = "blocking requests from your IP" in err_msg or "429" in err_msg or "IpBlocked" in type(e).__name__
+            if is_blocked and attempt < max_retries:
+                logger.warning(f"YouTube rate limit on fetch for {video_id}. Retrying after 3 seconds...")
+                time.sleep(3.0)
+                continue
+            logger.warning(f"Failed to fetch content of selected transcript for {video_id}: {e}")
+            return None
+
+    if not raw_items:
         return None
 
     snippets: List[SubtitleSnippet] = []

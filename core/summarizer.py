@@ -120,38 +120,67 @@ class GeminiSummarizer:
         self.model_name = model or os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
         self.client = genai.Client(api_key=self.api_key)
 
-    def summarize(self, transcript_data: VideoTranscriptData) -> str:
-        """Generate structured markdown from video transcript.
+    def summarize(
+        self,
+        transcript_data: VideoTranscriptData,
+        max_retries: int = 3,
+        initial_backoff: float = 10.0,
+        on_retry: Optional[Any] = None,
+    ) -> str:
+        """Generate structured markdown from video transcript with automatic retry on rate limits.
 
         Args:
             transcript_data: VideoTranscriptData containing metadata and subtitles.
+            max_retries: Maximum retry attempts on 429/quota errors.
+            initial_backoff: Initial wait time in seconds before retry.
+            on_retry: Optional callback function(attempt, wait_sec, error_str) for logging/UI.
 
         Returns:
             Structured Markdown string.
         """
+        import time
+
         prompt = build_prompt(transcript_data)
 
-        try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.2,
-                ),
-            )
-        except Exception as e:
-            logger.error(f"Gemini API call failed for video {transcript_data.metadata.video_id}: {e}")
-            raise RuntimeError(f"Gemini APIによる要約生成に失敗しました: {e}") from e
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.2,
+                    ),
+                )
+                if not response or not response.text:
+                    raise RuntimeError("Gemini APIから空の応答が返されました。")
 
-        if not response or not response.text:
-            raise RuntimeError("Gemini APIから空の応答が返されました。")
+                markdown_text = clean_markdown_output(response.text)
 
-        markdown_text = clean_markdown_output(response.text)
+                if not markdown_text.startswith("---"):
+                    logger.warning(
+                        f"Generated markdown for {transcript_data.metadata.video_id} does not start with YAML frontmatter."
+                    )
 
-        # Basic validation: ensure frontmatter exists
-        if not markdown_text.startswith("---"):
-            logger.warning(
-                f"Generated markdown for {transcript_data.metadata.video_id} does not start with YAML frontmatter."
-            )
+                return markdown_text
 
-        return markdown_text
+            except Exception as e:
+                err_str = str(e)
+                is_rate_limit = any(
+                    code in err_str for code in ["429", "RESOURCE_EXHAUSTED", "ResourceExhausted", "QuotaExceeded"]
+                )
+
+                if is_rate_limit and attempt < max_retries:
+                    wait_sec = initial_backoff * (2 ** (attempt - 1))
+                    logger.warning(
+                        f"Rate limit encountered on {transcript_data.metadata.video_id}. Retrying in {wait_sec}s (attempt {attempt}/{max_retries})..."
+                    )
+                    if on_retry:
+                        try:
+                            on_retry(attempt, wait_sec, err_str)
+                        except Exception:
+                            pass
+                    time.sleep(wait_sec)
+                    continue
+
+                logger.error(f"Gemini API call failed for video {transcript_data.metadata.video_id}: {e}")
+                raise RuntimeError(f"Gemini APIによる要約生成に失敗しました: {e}") from e
