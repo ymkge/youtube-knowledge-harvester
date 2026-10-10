@@ -241,6 +241,8 @@ class GeminiSummarizer:
                         f"Generated markdown for {transcript_data.metadata.video_id} does not start with YAML frontmatter."
                     )
 
+                return markdown_text
+
             except Exception as e:
                 err_str = str(e)
                 if is_quota_exhausted_error(e):
