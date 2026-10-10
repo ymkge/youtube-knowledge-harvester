@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Dict, List
 
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
-from core.exporter import MarkdownExporter, generate_filename
+from core.exporter import MarkdownExporter, format_duration, generate_filename
 from core.extractor import (
     VideoMetadata,
     VideoTranscriptData,
@@ -59,6 +60,7 @@ def init_session_state():
             "no_transcript": 0,
             "error": 0,
             "total": 0,
+            "elapsed_time": None,
         }
 
 
@@ -139,6 +141,12 @@ with st.sidebar:
         help="現在YouTubeからIPブロック（429エラー）を受けている場合や、字幕APIを一切使わずに安全に音声認識で取得したい場合にONにしてください。",
     )
 
+    enable_desktop_notification = st.checkbox(
+        "処理完了時にブラウザ通知を送る",
+        value=True,
+        help="処理が完了（または停止）した際に、ブラウザのデスクトップ通知（Notification API）を送信します。",
+    )
+
     st.markdown("---")
     st.markdown("### 💡 について")
     st.caption(
@@ -194,7 +202,14 @@ if submit_button:
         st.session_state.results = []
         st.session_state.logs = []
         st.session_state.zip_data = None
-        st.session_state.stats = {"success": 0, "no_transcript": 0, "error": 0, "total": 0}
+        st.session_state.stats = {
+            "success": 0,
+            "skipped_existing": 0,
+            "no_transcript": 0,
+            "error": 0,
+            "total": 0,
+            "elapsed_time": None,
+        }
 
         try:
             summarizer = GeminiSummarizer(api_key=env_api_key, model=model_input.strip())
@@ -213,6 +228,7 @@ if submit_button:
             st.session_state.logs.append(message)
             log_placeholder.markdown("\n".join(st.session_state.logs[-20:]))
 
+        start_time = time.time()
         with status_container.container():
             st.info("📡 チャンネル動画一覧を取得中...")
 
@@ -446,15 +462,52 @@ if submit_button:
                     )
                 time.sleep(cooldown_sec)
 
+        # 所要時間の算出
+        elapsed_sec = time.time() - start_time
+        elapsed_str = format_duration(elapsed_sec)
+        st.session_state.stats["elapsed_time"] = elapsed_str
+
         # ZIPアーカイブ作成
         if saved_files:
             st.session_state.zip_data = MarkdownExporter.create_zip_archive(saved_files)
 
         progress_bar.progress(1.0)
         if stopped_due_to_quota:
-            status_container.warning(f"🛑 Gemini APIクォータ上限到達により処理を自動停止しました（全 {total_videos} 件中 {len(saved_files)} 件保存）")
+            status_container.warning(
+                f"🛑 Gemini APIクォータ上限到達により処理を自動停止しました（全 {total_videos} 件中 {len(saved_files)} 件保存 / 経過時間: {elapsed_str}）"
+            )
+            st.toast(f"🛑 クォータ上限に達したため処理を停止しました（経過時間: {elapsed_str}）", icon="⚠️")
         else:
-            status_container.success(f"🎉 処理が完了しました！（全 {total_videos} 件中 {len(saved_files)} 件保存）")
+            status_container.success(
+                f"🎉 処理が完了しました！（全 {total_videos} 件中 {len(saved_files)} 件保存 / 所要時間: {elapsed_str}）"
+            )
+            st.toast(f"🎉 ナレッジ取得が完了しました！（保存: {len(saved_files)}件 / 所要時間: {elapsed_str}）", icon="✅")
+            st.balloons()
+
+        # デスクトップ通知（Notification API）
+        if enable_desktop_notification:
+            notify_title = "ナレッジ取得が完了しました" if not stopped_due_to_quota else "ナレッジ取得が自動停止しました"
+            notify_body = f"全 {total_videos} 件中 {len(saved_files)} 件保存 (所要時間: {elapsed_str})"
+            components.html(
+                f"""
+                <script>
+                if ("Notification" in window) {{
+                    if (Notification.permission === "granted") {{
+                        new Notification("{notify_title}", {{ body: "{notify_body}" }});
+                    }} else if (Notification.permission !== "denied") {{
+                        Notification.requestPermission().then(function(permission) {{
+                            if (permission === "granted") {{
+                                new Notification("{notify_title}", {{ body: "{notify_body}" }});
+                            }}
+                        }});
+                    }}
+                }}
+                </script>
+                """,
+                height=0,
+                width=0,
+            )
+
         st.session_state.is_processing = False
 
 # ----------------- Results & Download Section -----------------
@@ -462,12 +515,13 @@ if st.session_state.results:
     st.markdown("---")
     st.subheader("📊 処理結果サマリー")
 
-    stat_col1, stat_col2, stat_col3, stat_col4, stat_col5 = st.columns(5)
+    stat_col1, stat_col2, stat_col3, stat_col4, stat_col5, stat_col6 = st.columns(6)
     stat_col1.metric("走査対象動画", st.session_state.stats["total"])
     stat_col2.metric("新規保存成功", st.session_state.stats["success"])
     stat_col3.metric("既存スキップ", st.session_state.stats.get("skipped_existing", 0))
     stat_col4.metric("字幕なしスキップ", st.session_state.stats["no_transcript"])
     stat_col5.metric("エラー", st.session_state.stats["error"])
+    stat_col6.metric("所要時間", st.session_state.stats.get("elapsed_time") or "-")
 
     # Download Button
     if st.session_state.zip_data:
