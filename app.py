@@ -21,7 +21,12 @@ from core.extractor import (
     fetch_video_transcript,
     fetch_video_upload_date,
 )
-from core.summarizer import AVAILABLE_MODELS, DEFAULT_MODEL, GeminiSummarizer
+from core.summarizer import (
+    AVAILABLE_MODELS,
+    DEFAULT_MODEL,
+    GeminiQuotaExhaustedException,
+    GeminiSummarizer,
+)
 
 # Load .env file
 load_dotenv()
@@ -74,7 +79,7 @@ with st.sidebar:
         "Gemini モデル",
         options=AVAILABLE_MODELS,
         index=0,
-        help="利用するGeminiモデルを選択してください（デフォルト: gemini-flash-latest）。",
+        help="利用するGeminiモデルを選択してください（デフォルト: gemini-flash-lite-latest）。",
     )
 
     interval_sec = st.slider(
@@ -251,6 +256,7 @@ if submit_button:
                 f"⏳ {reason}を検知。{wait_sec:.0f}秒待機して再試行します (試行 {attempt}/3)..."
             )
 
+        stopped_due_to_quota = False
         for idx, video in enumerate(videos, start=1):
             progress_ratio = idx / total_videos
             progress_bar.progress(progress_ratio)
@@ -310,6 +316,12 @@ if submit_button:
                         metadata=video,
                         on_retry=on_gemini_retry,
                     )
+                except GeminiQuotaExhaustedException as qe:
+                    append_log(f"🛑 [{idx}/{total_videos}] Gemini APIの1日あたり無料クォータ上限に達したため、処理を安全に自動停止しました: {qe}")
+                    logger.error(f"Batch stopped due to Gemini quota exhaustion: {qe}")
+                    st.session_state.stats["error"] += 1
+                    stopped_due_to_quota = True
+                    break
                 except Exception as e:
                     append_log(f"❌ [{idx}/{total_videos}] Gemini音声要約失敗 ({video.title}): {e}")
                     logger.error(f"Failed to summarize audio for {video.video_id}: {e}")
@@ -350,6 +362,12 @@ if submit_button:
                             metadata=video,
                             on_retry=on_gemini_retry,
                         )
+                    except GeminiQuotaExhaustedException as qe:
+                        append_log(f"🛑 [{idx}/{total_videos}] Gemini APIの1日あたり無料クォータ上限に達したため、処理を安全に自動停止しました: {qe}")
+                        logger.error(f"Batch stopped due to Gemini quota exhaustion: {qe}")
+                        st.session_state.stats["error"] += 1
+                        stopped_due_to_quota = True
+                        break
                     except Exception as e:
                         append_log(f"❌ [{idx}/{total_videos}] Gemini音声要約失敗 ({video.title}): {e}")
                         logger.error(f"Failed to summarize audio for {video.video_id}: {e}")
@@ -380,6 +398,12 @@ if submit_button:
                             transcript_data,
                             on_retry=on_gemini_retry,
                         )
+                    except GeminiQuotaExhaustedException as qe:
+                        append_log(f"🛑 [{idx}/{total_videos}] Gemini APIの1日あたり無料クォータ上限に達したため、処理を安全に自動停止しました: {qe}")
+                        logger.error(f"Batch stopped due to Gemini quota exhaustion: {qe}")
+                        st.session_state.stats["error"] += 1
+                        stopped_due_to_quota = True
+                        break
                     except Exception as e:
                         append_log(f"❌ [{idx}/{total_videos}] Gemini要約失敗 ({video.title}): {e}")
                         logger.error(f"Failed to summarize video {video.video_id}: {e}")
@@ -427,7 +451,10 @@ if submit_button:
             st.session_state.zip_data = MarkdownExporter.create_zip_archive(saved_files)
 
         progress_bar.progress(1.0)
-        status_container.success(f"🎉 処理が完了しました！（全 {total_videos} 件中 {len(saved_files)} 件保存）")
+        if stopped_due_to_quota:
+            status_container.warning(f"🛑 Gemini APIクォータ上限到達により処理を自動停止しました（全 {total_videos} 件中 {len(saved_files)} 件保存）")
+        else:
+            status_container.success(f"🎉 処理が完了しました！（全 {total_videos} 件中 {len(saved_files)} 件保存）")
         st.session_state.is_processing = False
 
 # ----------------- Results & Download Section -----------------
