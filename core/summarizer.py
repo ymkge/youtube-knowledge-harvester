@@ -12,8 +12,13 @@ from core.extractor import VideoTranscriptData
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gemini-flash-latest"
-AVAILABLE_MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"]
+class GeminiQuotaExhaustedException(Exception):
+    """Raised when Gemini API daily quota (free tier RPD) is completely exhausted."""
+    pass
+
+
+DEFAULT_MODEL = "gemini-flash-lite-latest"
+AVAILABLE_MODELS = ["gemini-flash-lite-latest", "gemini-flash-latest"]
 
 RETRYABLE_PATTERNS = [
     "429",
@@ -35,8 +40,38 @@ RETRYABLE_PATTERNS = [
 ]
 
 
+def is_quota_exhausted_error(error: Any) -> bool:
+    """Check if the error is an unrecoverable quota exhaustion (e.g., daily limit 429)."""
+    err_str = str(error).lower()
+    quota_indicators = [
+        "free_tier_requests",
+        "generaterequestsperday",
+        "quota exceeded for metric",
+        "retrydelay",
+        "retry in 10h",
+        "retry in 1",
+        "retry in 2",
+        "retry in 3",
+        "retry in 4",
+        "retry in 5",
+        "retry in 6",
+        "retry in 7",
+        "retry in 8",
+        "retry in 9",
+    ]
+    is_exhausted = (
+        "resource_exhausted" in err_str
+        or "quota exceeded" in err_str
+        or "quotaexceeded" in err_str
+    )
+    return is_exhausted and any(k in err_str for k in quota_indicators)
+
+
 def is_transient_error(error: Any) -> bool:
     """Check if the error is temporary (rate limit 429, server overload 503, timeout)."""
+    # Do not treat daily quota exhaustion as a temporary transient error
+    if is_quota_exhausted_error(error):
+        return False
     err_str = str(error).lower()
     return any(p in err_str for p in RETRYABLE_PATTERNS)
 
@@ -206,10 +241,12 @@ class GeminiSummarizer:
                         f"Generated markdown for {transcript_data.metadata.video_id} does not start with YAML frontmatter."
                     )
 
-                return markdown_text
-
             except Exception as e:
                 err_str = str(e)
+                if is_quota_exhausted_error(e):
+                    logger.error(f"Gemini API daily quota exhausted on {transcript_data.metadata.video_id}: {e}")
+                    raise GeminiQuotaExhaustedException(f"Gemini APIの1日あたり無料クォータ上限（RPD）に達しました: {e}") from e
+
                 if is_transient_error(e) and attempt < max_retries:
                     wait_sec = initial_backoff * (2 ** (attempt - 1))
 
@@ -369,6 +406,9 @@ summary: "動画全体の要約を150字程度で簡潔かつ具体的に記述�
 
                 except Exception as e:
                     err_str = str(e)
+                    if is_quota_exhausted_error(e):
+                        logger.error(f"Gemini API daily quota exhausted on audio {metadata.video_id}: {e}")
+                        raise GeminiQuotaExhaustedException(f"Gemini APIの1日あたり無料クォータ上限（RPD）に達しました: {e}") from e
 
                     # Invalidate file if it became stale or failed state precondition
                     if any(p in err_str.lower() for p in ["failed_precondition", "active state", "not found"]):

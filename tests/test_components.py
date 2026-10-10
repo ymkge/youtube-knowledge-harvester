@@ -151,6 +151,68 @@ class TestSummarizer(unittest.TestCase):
         self.assertEqual(kwargs["config"].mime_type, "audio/webm")
         mock_client.files.delete.assert_called_once_with(name="files/test_audio_123")
 
+    def test_default_model_is_lite(self):
+        from core.summarizer import AVAILABLE_MODELS, DEFAULT_MODEL
+        self.assertEqual(DEFAULT_MODEL, "gemini-flash-lite-latest")
+        self.assertEqual(AVAILABLE_MODELS[0], "gemini-flash-lite-latest")
+
+    def test_quota_exhausted_detection(self):
+        from core.summarizer import (
+            is_quota_exhausted_error,
+            is_transient_error,
+        )
+        daily_quota_error = Exception(
+            "429 RESOURCE_EXHAUSTED. Quota exceeded for metric: "
+            "generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, "
+            "model: gemini-3.8-flash. Please retry in 10h38m50s. "
+            "quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+        )
+        transient_429_error = Exception("429 RESOURCE_EXHAUSTED: Rate limit exceeded. Please wait a moment.")
+
+        self.assertTrue(is_quota_exhausted_error(daily_quota_error))
+        self.assertFalse(is_quota_exhausted_error(transient_429_error))
+
+        # Daily quota error should NOT be treated as transient (should not retry)
+        self.assertFalse(is_transient_error(daily_quota_error))
+        # Transient 429 should be treated as transient
+        self.assertTrue(is_transient_error(transient_429_error))
+
+    @patch("core.summarizer.genai.Client")
+    def test_summarize_quota_exhaustion_raises_immediately(self, mock_client_cls):
+        from core.summarizer import GeminiQuotaExhaustedException, GeminiSummarizer
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.side_effect = Exception(
+            "429 RESOURCE_EXHAUSTED. Quota exceeded for metric: "
+            "generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20"
+        )
+
+        summarizer = GeminiSummarizer(api_key="fake-key")
+        meta = VideoMetadata(
+            video_id="abc123xyz",
+            title="Test Video",
+            url="https://www.youtube.com/watch?v=abc123xyz",
+        )
+        data = VideoTranscriptData(
+            metadata=meta,
+            subtitles=[SubtitleSnippet(start=0.0, duration=1.0, text="test")],
+            language="ja",
+            is_generated=False,
+        )
+
+        retry_count = 0
+        def on_retry(att, wait, err):
+            nonlocal retry_count
+            retry_count += 1
+
+        with self.assertRaises(GeminiQuotaExhaustedException):
+            summarizer.summarize(data, max_retries=3, on_retry=on_retry)
+
+        # Should raise immediately without transient retries
+        self.assertEqual(retry_count, 0)
+        self.assertEqual(mock_client.models.generate_content.call_count, 1)
+
     def test_get_audio_mime_type(self):
         from core.summarizer import get_audio_mime_type
         self.assertEqual(get_audio_mime_type("test.webm"), "audio/webm")
