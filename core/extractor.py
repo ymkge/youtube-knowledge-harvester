@@ -143,6 +143,37 @@ def fetch_channel_videos(channel_url: str, max_results: int = 50) -> List[VideoM
     return results
 
 
+def fetch_video_upload_date(video_id: str) -> Optional[str]:
+    """Fetch upload_date (YYYYMMDD) for a single YouTube video using yt-dlp.
+
+    Args:
+        video_id: Target YouTube video ID.
+
+    Returns:
+        Upload date string in YYYYMMDD format, or None if failed.
+    """
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    ydl_opts = {
+        "extract_flat": True,
+        "skip_download": True,
+        "quiet": True,
+        "no_warnings": True,
+        "ignoreerrors": True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if info:
+                date = info.get("upload_date")
+                if date:
+                    return str(date)
+        return None
+    except Exception as e:
+        logger.debug(f"Failed to fetch upload date for {video_id}: {e}")
+        return None
+
+
 def _get_api_client():
     """Create a YouTubeTranscriptApi instance with browser headers."""
     import requests

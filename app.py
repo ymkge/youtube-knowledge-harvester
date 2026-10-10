@@ -19,6 +19,7 @@ from core.extractor import (
     download_video_audio,
     fetch_channel_videos,
     fetch_video_transcript,
+    fetch_video_upload_date,
 )
 from core.summarizer import AVAILABLE_MODELS, DEFAULT_MODEL, GeminiSummarizer
 
@@ -258,6 +259,12 @@ if submit_button:
                 st.markdown(
                     f"**⏳ [{idx}/{total_videos}] 処理中: [{video.title}]({video.url})**"
                 )
+
+            # 投稿日補完: upload_date が未設定ならオンデマンド取得
+            if not video.upload_date:
+                fetched_date = fetch_video_upload_date(video.video_id)
+                if fetched_date:
+                    video.upload_date = fetched_date
 
             filename = generate_filename(video, prefix_date=prefix_date_option)
             target_file_path = exporter.output_dir / filename
