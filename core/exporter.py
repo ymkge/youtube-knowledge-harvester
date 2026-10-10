@@ -34,6 +34,28 @@ def generate_filename(metadata: VideoMetadata, prefix_date: bool = True) -> str:
     return f"{safe_video_id}.md"
 
 
+def format_duration(seconds: float) -> str:
+    """Format duration in seconds to a human-readable Japanese string.
+
+    Examples:
+        45.0 -> '45秒'
+        125.0 -> '2分5秒'
+        3665.0 -> '1時間1分5秒'
+    """
+    total_sec = max(0, int(round(seconds)))
+    if total_sec < 60:
+        return f"{total_sec}秒"
+
+    hours = total_sec // 3600
+    rem = total_sec % 3600
+    minutes = rem // 60
+    sec = rem % 60
+
+    if hours > 0:
+        return f"{hours}時間{minutes}分{sec}秒"
+    return f"{minutes}分{sec}秒"
+
+
 class MarkdownExporter:
     """Handles saving markdown files and building zip archives."""
 

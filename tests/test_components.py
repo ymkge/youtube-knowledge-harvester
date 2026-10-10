@@ -5,7 +5,12 @@ import unittest
 from unittest.mock import MagicMock, patch
 import zipfile
 
-from core.exporter import MarkdownExporter, generate_filename, sanitize_filename
+from core.exporter import (
+    MarkdownExporter,
+    format_duration,
+    generate_filename,
+    sanitize_filename,
+)
 from core.extractor import (
     SubtitleSnippet,
     VideoMetadata,
@@ -249,6 +254,16 @@ class TestExporter(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
             self.assertEqual(set(zf.namelist()), {"test1.md", "test2.md"})
             self.assertEqual(zf.read("test1.md").decode("utf-8"), "# Test 1 Content")
+
+    def test_format_duration(self):
+        self.assertEqual(format_duration(0), "0秒")
+        self.assertEqual(format_duration(45.2), "45秒")
+        self.assertEqual(format_duration(59.9), "1分0秒")
+        self.assertEqual(format_duration(60), "1分0秒")
+        self.assertEqual(format_duration(125), "2分5秒")
+        self.assertEqual(format_duration(3600), "1時間0分0秒")
+        self.assertEqual(format_duration(3665), "1時間1分5秒")
+        self.assertEqual(format_duration(-5), "0秒")
 
 
 if __name__ == "__main__":
