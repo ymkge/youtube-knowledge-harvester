@@ -10,6 +10,7 @@ from core.extractor import (
     SubtitleSnippet,
     VideoMetadata,
     VideoTranscriptData,
+    fetch_video_upload_date,
     normalize_channel_url,
 )
 from core.summarizer import (
@@ -53,6 +54,26 @@ class TestExtractor(unittest.TestCase):
         formatted = data.formatted_transcript_text()
         self.assertIn("[00:10] Hello", formatted)
         self.assertIn("[01:15] World", formatted)
+
+    @patch("core.extractor.yt_dlp.YoutubeDL")
+    def test_fetch_video_upload_date(self, mock_ydl_cls):
+        mock_ydl = MagicMock()
+        mock_ydl_cls.return_value.__enter__.return_value = mock_ydl
+
+        # 1. Success case
+        mock_ydl.extract_info.return_value = {"upload_date": "20240501"}
+        date = fetch_video_upload_date("test_id")
+        self.assertEqual(date, "20240501")
+
+        # 2. None case
+        mock_ydl.extract_info.return_value = {}
+        date_none = fetch_video_upload_date("test_id")
+        self.assertIsNone(date_none)
+
+        # 3. Exception case
+        mock_ydl.extract_info.side_effect = Exception("Network error")
+        date_err = fetch_video_upload_date("test_id")
+        self.assertIsNone(date_err)
 
 
 class TestSummarizer(unittest.TestCase):
