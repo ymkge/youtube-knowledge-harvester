@@ -428,6 +428,12 @@ if submit_button:
                         continue
 
             # 3. ローカル保存
+            if not markdown_content:
+                append_log(f"❌ [{idx}/{total_videos}] 要約コンテンツが空のためスキップ: {video.title}")
+                st.session_state.stats["error"] += 1
+                time.sleep(interval_sec)
+                continue
+
             try:
                 saved_path = exporter.save_markdown(filename, markdown_content)
                 saved_files[filename] = markdown_content

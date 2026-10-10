@@ -156,6 +156,36 @@ class TestSummarizer(unittest.TestCase):
         self.assertEqual(kwargs["config"].mime_type, "audio/webm")
         mock_client.files.delete.assert_called_once_with(name="files/test_audio_123")
 
+    @patch("core.summarizer.genai.Client")
+    def test_summarize_success(self, mock_client_cls):
+        from core.summarizer import GeminiSummarizer
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.text = "---\ntitle: Test Video\n---\n# Test Video"
+        mock_client.models.generate_content.return_value = mock_response
+
+        summarizer = GeminiSummarizer(api_key="fake-key")
+        meta = VideoMetadata(
+            video_id="abc123xyz",
+            title="Test Video",
+            url="https://www.youtube.com/watch?v=abc123xyz",
+        )
+        data = VideoTranscriptData(
+            metadata=meta,
+            subtitles=[SubtitleSnippet(start=0.0, duration=1.0, text="Hello")],
+            language="ja",
+            is_generated=False,
+        )
+
+        result = summarizer.summarize(data)
+        self.assertIsNotNone(result)
+        self.assertIsInstance(result, str)
+        self.assertIn("Test Video", result)
+        mock_client.models.generate_content.assert_called_once()
+
     def test_default_model_is_lite(self):
         from core.summarizer import AVAILABLE_MODELS, DEFAULT_MODEL
         self.assertEqual(DEFAULT_MODEL, "gemini-flash-lite-latest")
