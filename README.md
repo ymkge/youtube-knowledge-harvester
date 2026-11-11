@@ -82,7 +82,7 @@ GEMINI_API_KEY=your_actual_gemini_api_key_here
 streamlit run app.py
 ```
 
-ブラウザで `http://localhost:8501` が自動的に開きます。
+ブラウザで `http://localhost:8501` が自動的に開き、以下UIが表示されます。
 
 <img width="1891" height="900" alt="スクリーンショット 2026-11-11 12 25 20" src="https://github.com/user-attachments/assets/6efbbff8-e339-4ed3-98b6-baced77ea7be" />
 
