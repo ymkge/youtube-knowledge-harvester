@@ -1,4 +1,3 @@
-<img width="1891" height="900" alt="スクリーンショット 2026-11-11 12 25 20" src="https://github.com/user-attachments/assets/e10872e9-d522-4c30-abbf-41085f0877bf" />
 # YouTube Knowledge Harvester 🎬📚
 
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
